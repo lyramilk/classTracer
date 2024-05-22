@@ -1,0 +1,33 @@
+plugins {
+    id 'java'
+}
+
+group = 'com.lyramilk.util'
+version = '1.0-SNAPSHOT'
+
+repositories {
+    mavenCentral()
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+dependencies {
+    testImplementation platform('org.junit:junit-bom:5.10.0')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    implementation("log4j:log4j:1.2.17")
+    implementation("de.femtopedia.dex2jar:dex-ir:2.4.11");
+    implementation("de.femtopedia.dex2jar:dex-translator:2.4.11");
+    implementation("de.femtopedia.dex2jar:dex-writer:2.4.11");
+    implementation("de.femtopedia.dex2jar:dex-reader:2.4.11");
+    implementation("de.femtopedia.dex2jar:dex-reader-api:2.4.11");
+    implementation("de.femtopedia.dex2jar:dex-tools:2.4.11");
+    implementation("de.femtopedia.dex2jar:d2j-smali:2.4.11");
+    implementation("de.femtopedia.dex2jar:d2j-base-cmd:2.4.11");
+    implementation("de.femtopedia.dex2jar:d2j-jasmin:2.4.11");
+}
+
+test {
+    useJUnitPlatform()
+}
