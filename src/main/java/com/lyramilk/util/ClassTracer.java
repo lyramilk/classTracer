@@ -8,10 +8,9 @@ import org.apache.log4j.Logger;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.util.*;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 import java.util.jar.Manifest;
@@ -22,9 +21,12 @@ public class ClassTracer extends ClassLoader {
 
     ClassPathCache cache = new MemoryClassPathCache();
     MemoryClassPathCache loaderCache = new MemoryClassPathCache();
-    HashMap<String, String> loadedClasses = new HashMap<>();
+    HashMap<String, String> loadedClassNames = new HashMap<>();
+    HashMap<String, Class<?>> loadedClassObjects = new HashMap<>();
 
     List<ClassPathReader> classPathReaders = new ArrayList<>();
+    // 追踪参数和返回值中引用到的类。
+    Set<Class<?>> traceClasses = new HashSet<>();
 
     public ClassTracer() {
     }
@@ -34,7 +36,23 @@ public class ClassTracer extends ClassLoader {
     }
 
     private static String outputJarPathByPackageName(String name) {
-        return name.replace(".", "/");
+        return name.replace(".", "/") + ".class";
+    }
+
+    private void addClassToTraceSet(Class<?> clazz, Set<Class<?>> classes) {
+        boolean r = false;
+        Class<?> simpleClazz = clazz.isArray() ? clazz.getComponentType() : clazz;
+        if (simpleClazz != null && classes.add(simpleClazz)) {
+            try {
+                findClass(simpleClazz.getName());
+            } catch (ClassNotFoundException e) {
+                //throw new RuntimeException(e);
+                logger.warn("class not found:" + simpleClazz.getName());
+            }
+            if (simpleClazz.getName().startsWith("android.os")) {
+                System.out.println(simpleClazz.getName());
+            }
+        }
     }
 
     public void setCacheDir(String cacheDir) {
@@ -43,10 +61,6 @@ public class ClassTracer extends ClassLoader {
 
     public ClassPathCache getCache() {
         return this.cache;
-    }
-
-    public void setCache(ClassPathCache cache) {
-        this.cache = cache;
     }
 
     public void appendClassPath(String path) {
@@ -105,8 +119,88 @@ public class ClassTracer extends ClassLoader {
 
     @Override
     public Class<?> findClass(String name) throws ClassNotFoundException {
+        if (loadedClassObjects.containsKey(name)) {
+            return loadedClassObjects.get(name);
+        }
         byte[] b = loadClassData(name);
-        return defineClass(name, b, 0, b.length);
+
+        Class<?> r = null;
+        try {
+            r = Class.forName(name, true, this);
+        } catch (ClassNotFoundException e) {
+            r = defineClass(name, b, 0, b.length);
+        } catch (ClassCircularityError e) {
+            r = defineClass(name, b, 0, b.length);
+        }
+
+        if (r != null) {
+            loadedClassObjects.put(name, findLoadedClass(name));
+        }
+        return r;
+    }
+
+    public void trace() throws ClassNotFoundException {
+        for (Class<?> t : loadedClassObjects.values()) {
+            addClassToTraceSet(t, traceClasses);
+        }
+
+        int sizeOfClasses = traceClasses.size();
+        int lastSizeOfClasses = 0;
+        while (sizeOfClasses > lastSizeOfClasses) {
+            lastSizeOfClasses = sizeOfClasses;
+            Set<Class<?>> newClasses = new HashSet<>();
+
+            for (Class<?> c : traceClasses.toArray(new Class<?>[0])) {
+                trace0(c, newClasses);
+            }
+
+            for (Class<?> c : newClasses) {
+                addClassToTraceSet(c, traceClasses);
+            }
+            sizeOfClasses = traceClasses.size();
+        }
+    }
+
+    public void trace(Class<?> clazz) throws ClassNotFoundException {
+        if (clazz == null) {
+            return;
+        }
+
+        int sizeOfClasses = traceClasses.size();
+        int lastSizeOfClasses = 0;
+        while (sizeOfClasses > lastSizeOfClasses) {
+            lastSizeOfClasses = sizeOfClasses;
+            Set<Class<?>> newClasses = new HashSet<>();
+
+            for (Class<?> c : traceClasses.toArray(new Class<?>[0])) {
+                trace0(c, newClasses);
+            }
+
+            for (Class<?> c : newClasses) {
+                addClassToTraceSet(c, traceClasses);
+            }
+            sizeOfClasses = traceClasses.size();
+        }
+    }
+
+    private void trace0(Class<?> clazz, Set<Class<?>> classes) throws ClassNotFoundException {
+        addClassToTraceSet(clazz, classes);
+        Method[] methods = clazz.getMethods();
+        for (Method method : methods) {
+            for (Class<?> c : method.getParameterTypes()) {
+                addClassToTraceSet(c, classes);
+            }
+            addClassToTraceSet(method.getReturnType(), classes);
+        }
+        for (Class<?> c : clazz.getClasses()) {
+            addClassToTraceSet(c, classes);
+        }
+
+        Field[] fields = clazz.getFields();
+        for (Field field : fields) {
+            Class<?> t = field.getType();
+            addClassToTraceSet(t, classes);
+        }
     }
 
     private byte[] loadClassData(String name) throws ClassNotFoundException {
@@ -115,16 +209,19 @@ public class ClassTracer extends ClassLoader {
             throw new ClassNotFoundException("class not found:" + name);
         }
         String displayName = classPathReader.getDisplayName(name);
-        loadedClasses.put(name, displayName);
+        loadedClassNames.put(name, displayName);
+        System.out.println("load class:" + displayName + "," + loadedClassNames.size());
         loaderCache.put("loader", name, classPathReader.readAllBytes(name));
 
         byte[] result = classPathReader.readAllBytes(name);
         return classPathReader.readAllBytes(name);
     }
 
-    public boolean dumpToDir(String path) {
+    public boolean dumpToDir(String path) throws ClassNotFoundException {
         loaderCache.putIsolate("loader");
-        for (Map.Entry<String, String> entry : loadedClasses.entrySet()) {
+        trace();
+        System.out.println("dump to dir:" + path + "," + loadedClassNames.size());
+        for (Map.Entry<String, String> entry : loadedClassNames.entrySet()) {
             String name = entry.getKey();
             String filename = outputDirByPackageName(path, name);
             String srcDisplayName = entry.getValue();
@@ -148,17 +245,19 @@ public class ClassTracer extends ClassLoader {
         return true;
     }
 
-    public boolean dumpToJar(String jarFileName) throws IOException {
+    public boolean dumpToJar(String jarFileName) throws IOException, ClassNotFoundException {
         return dumpToJar(jarFileName, null);
     }
 
-    public boolean dumpToJar(String jarFileName, String mainClass) throws IOException {
+    public boolean dumpToJar(String jarFileName, String mainClass) throws IOException, ClassNotFoundException {
+        trace();
+
         Manifest manifest = new Manifest();
         if (mainClass != null) {
             manifest.getMainAttributes().putValue("Main-Class", mainClass);
         }
         JarOutputStream jarOutputStream = new JarOutputStream(new FileOutputStream(jarFileName), manifest);
-        for (Map.Entry<String, String> entry : loadedClasses.entrySet()) {
+        for (Map.Entry<String, String> entry : loadedClassNames.entrySet()) {
             String name = entry.getKey();
             String jarpath = outputJarPathByPackageName(name);
             String srcDisplayName = entry.getValue();
@@ -184,8 +283,10 @@ public class ClassTracer extends ClassLoader {
     }
 
 
-    public boolean dumpToJar(JarOutputStream jarOutputStream) throws IOException {
-        for (Map.Entry<String, String> entry : loadedClasses.entrySet()) {
+    public boolean dumpToJar(JarOutputStream jarOutputStream) throws IOException, ClassNotFoundException {
+        trace();
+
+        for (Map.Entry<String, String> entry : loadedClassNames.entrySet()) {
             String name = entry.getKey();
             String jarpath = outputJarPathByPackageName(name);
             String srcDisplayName = entry.getValue();

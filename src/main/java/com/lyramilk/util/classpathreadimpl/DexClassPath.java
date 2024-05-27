@@ -23,7 +23,6 @@ import org.objectweb.asm.Opcodes;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
-import java.util.Iterator;
 
 
 public class DexClassPath extends ClassPathReader {
@@ -43,12 +42,13 @@ public class DexClassPath extends ClassPathReader {
         }
     };
     boolean isInit = false;
+    int readerConfig = DexFileReader.SKIP_DEBUG | DexFileReader.KEEP_CLINIT;
+    int v3Config = V3.REUSE_REGISTER | V3.TOPOLOGICAL_SORT;
 
     public DexClassPath(String s, ClassTracer classTracer) {
         this.classTracer = classTracer;
         this.dexFileName = s;
     }
-
 
     void init() {
 
@@ -69,7 +69,7 @@ public class DexClassPath extends ClassPathReader {
         try {
             BaseDexFileReader reader = MultiDexFileReader.open(fileContent);
             DexFileNode fileNode = new DexFileNode();
-            reader.accept(fileNode, DexFileReader.IGNORE_READ_EXCEPTION);
+            reader.accept(fileNode, readerConfig | DexFileReader.IGNORE_READ_EXCEPTION);
 
             ClassVisitorFactory cvf = new ClassVisitorFactory() {
                 @Override
@@ -100,15 +100,17 @@ public class DexClassPath extends ClassPathReader {
                 }
             };
 
-            int readerConfig = 1;
-            int v3Config = 1 | 4 | 8;
+
             (new ExDex2Asm(this.exceptionHandler) {
                 public void convertCode(DexMethodNode methodNode, MethodVisitor mv, Dex2Asm.ClzCtx clzCtx) {
-                    if ((readerConfig & 4) == 0 || !methodNode.method.getName().equals("<clinit>")) {
-                        super.convertCode(methodNode, mv, clzCtx);
+                    if ((readerConfig & DexFileReader.SKIP_CODE) != 0 && methodNode.method.getName().equals("<clinit>")) {
+                        // also skip clinit
+                        return;
                     }
+                    super.convertCode(methodNode, mv, clzCtx);
                 }
 
+                @Override
                 public void optimize(IrMethod irMethod) {
                     T_CLEAN_LABEL.transform(irMethod);
                     T_DEAD_CODE.transform(irMethod);
@@ -126,12 +128,9 @@ public class DexClassPath extends ClassPathReader {
                     T_AGG.transform(irMethod);
                     T_MULTI_ARRAY.transform(irMethod);
                     T_VOID_INVOKE.transform(irMethod);
-                    if (0 != (v3Config & 4)) {
+                    if (0 != (v3Config & V3.PRINT_IR)) {
                         int i = 0;
-                        Iterator var3 = irMethod.stmts.iterator();
-
-                        while (var3.hasNext()) {
-                            Stmt p = (Stmt) var3.next();
+                        for (Stmt p : irMethod.stmts) {
                             if (p.st == Stmt.ST.LABEL) {
                                 LabelStmt labelStmt = (LabelStmt) p;
                                 labelStmt.displayName = "L" + i++;
@@ -148,8 +147,14 @@ public class DexClassPath extends ClassPathReader {
                     T_TRIM_EX.transform(irMethod);
                 }
 
-                public void ir2j(IrMethod irMethod, MethodVisitor mv, Dex2Asm.ClzCtx clzCtx) {
-                    (new IR2JConverter()).optimizeSynchronized(0 != (8 & v3Config)).clzCtx(clzCtx).ir(irMethod).asm(mv).convert();
+                @Override
+                public void ir2j(IrMethod irMethod, MethodVisitor mv, ClzCtx clzCtx) {
+                    new IR2JConverter()
+                            .optimizeSynchronized(0 != (V3.OPTIMIZE_SYNCHRONIZED & v3Config))
+                            .clzCtx(clzCtx)
+                            .ir(irMethod)
+                            .asm(mv)
+                            .convert();
                 }
             }).convertDex(fileNode, cvf);
 
