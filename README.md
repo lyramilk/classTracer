@@ -23,7 +23,7 @@ public class Main {
 
         // 像普通的ClassLoader一样查找java类
         Class<?> clazz = classTracer.findClass("com.lyramilk.test.Test");
-        // 将查找过程中加载的java类dump到目录中，需要注意的是这个功能并不扫描static块，如果通过static块向工厂注册的方式，用ClassTracer是不会加载它们的。
+        // 将查找过程中加载的java类dump到目录中，需要注意的是这个功能没有办法追踪到执行过程中加载的类。所以实际跑起来的时候还是会有class not found，到时候把找不到的类用上面的findclass再找一下后再次dump，循环这个步骤直到dump出来的文件可以跑通就ok了。
         classTracer.dumpToDir(baseDir + "dump");
         // 将查找过程中加载的java类dump成一个jar文件
         classTracer.dumpToJar(baseDir + "dump" + File.separator + "mydump.jar");
